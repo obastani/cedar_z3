@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 import z3
@@ -44,13 +45,55 @@ LONG_MAX = (1 << 63) - 1
 
 
 def string_literal(value: str) -> z3.SeqRef:
-    """Injectively encode opaque Cedar strings, including all Unicode scalars.
+    """Injectively encode Cedar strings, including all Unicode scalars.
 
-    No string ordering/concatenation/pattern operation is supported by this
-    encoder. Hex encoding avoids Z3's smaller character alphabet and its
-    interpretation of backslash-u sequences in StringVal().
+    UTF-8 hex encoding avoids Z3's smaller character alphabet and its
+    interpretation of backslash-u sequences in StringVal(). Pattern matching
+    operates on this same encoding, at complete Unicode scalar boundaries.
     """
     return z3.StringVal("u" + value.encode("utf-8").hex())
+
+
+@lru_cache(maxsize=1)
+def encoded_character_regex() -> z3.ReRef:
+    """The UTF-8 hex encodings of exactly one Unicode scalar value.
+
+    Restricting UTF-8 leading/continuation bytes excludes overlong sequences,
+    surrogates, and code points above U+10FFFF. A wildcard must consume complete
+    scalars, rather than arbitrary hex digits or partial UTF-8 sequences.
+    """
+    hexdigit = z3.Union(z3.Range("0", "9"), z3.Range("a", "f"))
+    continuation = z3.Concat(
+        z3.Union(z3.Range("8", "9"), z3.Range("a", "b")), hexdigit,
+    )
+    two_byte_lead = z3.Union(
+        z3.Concat(z3.Re("c"), z3.Union(z3.Range("2", "9"), z3.Range("a", "f"))),
+        z3.Concat(z3.Re("d"), hexdigit),
+    )
+    return z3.Union(
+        # U+0000..U+007F.
+        z3.Concat(z3.Range("0", "7"), hexdigit),
+        # U+0080..U+07FF.
+        z3.Concat(two_byte_lead, continuation),
+        # U+0800..U+FFFF, excluding UTF-16 surrogates.
+        z3.Concat(z3.Re("e0"), z3.Range("a", "b"), hexdigit, continuation),
+        z3.Concat(z3.Re("e"), z3.Union(z3.Range("1", "9"), z3.Range("a", "c")),
+                  continuation, continuation),
+        z3.Concat(z3.Re("ed"), z3.Range("8", "9"), hexdigit, continuation),
+        z3.Concat(z3.Re("e"), z3.Range("e", "f"), continuation, continuation),
+        # U+10000..U+10FFFF.
+        z3.Concat(z3.Re("f0"), z3.Union(z3.Re("9"), z3.Range("a", "b")),
+                  hexdigit, continuation, continuation),
+        z3.Concat(z3.Re("f"), z3.Range("1", "3"),
+                  continuation, continuation, continuation),
+        z3.Concat(z3.Re("f48"), hexdigit, continuation, continuation),
+    )
+
+
+@lru_cache(maxsize=1)
+def encoded_string_regex() -> z3.ReRef:
+    """All encoded Cedar strings, including the empty string encoded as 'u'."""
+    return z3.Concat(z3.Re("u"), z3.Star(encoded_character_regex()))
 
 
 @dataclass

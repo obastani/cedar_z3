@@ -328,9 +328,8 @@ class ImplicationTests(unittest.TestCase):
         with self.assertRaises(InvalidPolicy):
             check_implication(permit("context.unknown"), ALLOW, schema())
 
-    def test_unsupported_pattern_operator_raises(self):
-        with self.assertRaises(UnsupportedFeature):
-            check_implication(permit('context.text like "a*"'), ALLOW, schema())
+    def test_pattern_operator_is_supported(self):
+        self.check(permit('context.text like "a*"'), permit('context.text != ""'), True)
 
     def test_unsupported_symbolic_hierarchy_set_raises(self):
         with self.assertRaises(UnsupportedFeature):

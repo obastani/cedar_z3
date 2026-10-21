@@ -15,6 +15,7 @@ import z3
 from .model import (
     BOOL, EMPTY_SET, LONG_MAX, LONG_MIN, Field, Type, Value,
     UnsupportedFeature, sort_of, element_sort, set_member, string_literal,
+    encoded_string_regex,
 )
 
 
@@ -51,7 +52,16 @@ class Environment:
         elif value.type.kind == "set":
             self.set_terms.setdefault(value.type.element, {})[value.data.sexpr()] = value
         elif value.type.kind not in {"empty_set"}:
-            self.scalar_terms.setdefault(value.type, {})[value.data.sexpr()] = value
+            terms = self.scalar_terms.setdefault(value.type, {})
+            key = value.data.sexpr()
+            if value.type.kind == "string" and key not in terms:
+                # Negated patterns must not admit strings outside the encoding
+                # (e.g. an impossible witness for !(context.s like "*")).
+                # Entity IDs and unobserved set members remain opaque: only
+                # their equality is visible, so the materializer can rename
+                # them injectively while preserving every observation.
+                self.constraints.append(z3.InRe(value.data, encoded_string_regex()))
+            terms[key] = value
             if value.type.kind == "entity":
                 self.entity_terms[(value.type.name, value.data.sexpr())] = value
 

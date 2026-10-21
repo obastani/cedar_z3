@@ -1,0 +1,31 @@
+// The JSON equivalent is SCHEMA in agent_like.py.
+entity Agent;
+entity File { path: String };
+entity Url { host: String };
+entity Port { port: Long };
+entity Package { installer: String, name: String };
+
+action "ReadExecute" appliesTo {
+    principal: [Agent],
+    resource: [File]
+};
+
+action "Write" appliesTo {
+    principal: [Agent],
+    resource: [File]
+};
+
+action "FetchUrl" appliesTo {
+    principal: [Agent],
+    resource: [Url]
+};
+
+action "ListenPort" appliesTo {
+    principal: [Agent],
+    resource: [Port]
+};
+
+action "InstallPackage" appliesTo {
+    principal: [Agent],
+    resource: [Package]
+};

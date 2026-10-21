@@ -1,7 +1,3 @@
-# Warning
-
-This project was generated one-shot using GPT-6-Astra. It is intended for internal use but was convenient to host on a publicly available Git repo. Use at your own risk.
-
 # Cedar policy implication with Python and Z3
 
 This package checks whether **policy set A is at least as conservative as policy
@@ -122,6 +118,50 @@ The result has:
 `is_at_least_as_conservative()` has the same arguments and returns just
 `check_implication(...).holds`.
 
+### String patterns with `like`
+
+The checker supports Cedar's `like` operator, including escaped literal stars
+and Unicode. Patterns match the whole string. `*` matches zero or more
+characters, including `/`, newlines, and supplementary Unicode characters;
+`\*` matches a literal asterisk. Matching is case-sensitive. Other characters,
+including `?`, `.`, and brackets, are literal rather than regular-expression
+syntax. These are Cedar string patterns, so paths are not normalized.
+
+For example, using the Agent/File schema in `examples/agent_like.py`:
+
+```python
+from cedar_z3 import check_implication
+from examples.agent_like import SCHEMA
+
+a = r'''
+permit(principal, action == Action::"ReadExecute", resource)
+when { resource.path like "/workspace/app/*" };
+'''
+b = r'''
+permit(principal, action == Action::"ReadExecute", resource)
+when { resource.path like "/workspace/*" };
+'''
+
+assert check_implication(a, b, SCHEMA).holds is True
+assert check_implication(b, a, SCHEMA).holds is False
+```
+
+Use a raw Python string when writing Cedar escapes, for example
+`r'resource.path like "/workspace/\*.txt"'` to match the literal path
+`/workspace/*.txt`.
+
+The complete example includes the requested `Agent`, `File`, `Url`, `Port`,
+and `Package` types and all five actions. Run it with:
+
+```bash
+python -m pip install .
+python examples/agent_like.py
+```
+
+It proves A implies B across all five request environments, then displays a
+concrete request allowed by B and denied by A. The matching human-readable
+schema is in `examples/agent.cedarschema`.
+
 There is no three-valued implication result. Invalid inputs and unsuccessful
 execution raise exceptions. `timeout_ms=None`, the default, imposes no timeout.
 If supplied, a positive timeout applies to each Z3 query, including finite-set
@@ -193,7 +233,7 @@ Supported:
   arbitrary policy sets.
 - Principal/action/resource scopes using equality, hierarchy membership,
   type tests, and action lists; schema-defined action groups.
-- Booleans, signed 64-bit integers, opaque strings, entity references, records,
+- Booleans, signed 64-bit integers, Unicode strings, entity references, records,
   optional attributes, nested records, and sets of Boolean/Long/String/entity
   values.
 - `==`, `!=`, integer comparisons, `+`, `-`, Cedar's restricted multiplication,
@@ -202,6 +242,8 @@ Supported:
   explicit list of entity expressions.
 - `contains`, `containsAll`, `containsAny`, `isEmpty`, set equality, and record
   equality.
+- `like` with whole-string wildcard matching, escaped literal asterisks,
+  backslashes, empty patterns, and the full Unicode scalar range.
 - Namespaces, common schema type aliases, `EntityOrCommon`, entity hierarchy
   transitivity/reflexivity/acyclicity, missing entities, dangling parent
   references, and shared attributes when entity UIDs alias.
@@ -209,7 +251,7 @@ Supported:
 The following are explicitly rejected when encountered in the analyzed path
 or schema:
 
-- `like` and extension functions/types such as IP addresses, decimals, dates,
+- Extension functions/types such as IP addresses, decimals, dates,
   and durations.
 - Entity tags and tag operations, enum entity types, open records, unresolved
   external schema declarations, and unknown schema features.
@@ -256,11 +298,19 @@ rank that prevents cycles. These constraints include every real finite
 schema-conforming store. Satisfying models are materialized with the observed
 ancestor links and checked by Cedar; model-decoding issues raise an exception.
 
-Strings are opaque in the supported fragment. Literal strings and entity IDs
-use an injective UTF-8 hex encoding, avoiding Z3's string escape handling and
-its smaller character alphabet. The decoder assigns distinct Cedar strings to
-distinct model values, preserving literal values. This is why adding a string
-pattern or concatenation operator would require additional encoding work.
+Strings and entity IDs use an injective UTF-8 hex encoding, avoiding Z3's
+string escape handling and its smaller character alphabet. Every observed
+string scalar is constrained to the regular language of valid encoded Unicode
+strings. A `like` pattern becomes a Z3 regular expression over the same
+encoding: literal runs are encoded exactly, and each wildcard consumes zero
+or more complete UTF-8 scalar encodings. The operand's evaluation-success
+condition is preserved, including under negation, `unless`, and `forbid`.
+
+The domain restriction matters for negative patterns: there is no impossible
+model string that can satisfy `!(context.text like "*")` when `context.text`
+exists and evaluates successfully. The materializer decodes pattern-observed
+strings exactly. Entity IDs and extra, unobserved set witnesses may still be
+assigned distinct fresh names because only their equality is visible.
 
 Sets are Z3 arrays. Long set elements use a 64-bit bitvector domain, while
 scalar arithmetic uses bounded mathematical integers with explicit overflow
@@ -282,14 +332,19 @@ Cedar-verified counterexample is sufficient to return `False`.
 
 ## Validation
 
-The included suite contains **42 end-to-end tests plus 225 differential
-expression cases** (43 unittest test methods in total). It checks direction,
+The included suite covers end-to-end implication, differential expression
+evaluation, and the string-encoding domain. It checks direction,
 all request environments, permit/forbid combination, optional data, absent
 entities, aliasing, hierarchy properties, schema action domains, integer
 overflow, Unicode/escape handling, sets, unsupported features, and solver
 failure handling. Differential cases compare both expression truth and
-error/no-error behavior with the actual Cedar evaluator. Every failing
-implication returned by integration tests is independently replayed with Cedar.
+error/no-error behavior with the actual Cedar evaluator. The pattern tests
+exercise wildcard placement, whole-string matching, escaped stars and
+backslashes, Unicode and control characters, missing data, negation,
+short-circuiting, equality, and set membership. Encoding tests compare valid
+and invalid boundary sequences with Python's strict UTF-8 decoder. Every
+failing implication returned by integration tests is independently replayed
+with Cedar.
 
 ## Source files
 
@@ -297,9 +352,11 @@ implication returned by integration tests is independently replayed with Cedar.
 - `cedar_z3/schema.py`: supported schema normalization and action environments.
 - `cedar_z3/expressions.py`: Cedar PST-to-Z3 expression translation.
 - `cedar_z3/environment.py`: symbolic requests, attributes, and hierarchy.
-- `cedar_z3/model.py`: typed intermediate values, equality, and conditionals.
+- `cedar_z3/model.py`: typed values, equality, conditionals, and Unicode encodings.
 - `cedar_z3/counterexample.py`: finite model materialization and Unicode decoding.
 - `tests/`: executable differential and integration tests.
+- `examples/agent_like.py`: five-action example with path and hostname patterns.
+- `examples/agent.cedarschema`: the example's human-readable Cedar schema.
 
 ## References
 
@@ -308,6 +365,7 @@ implication returned by integration tests is independently replayed with Cedar.
 - [Cedar JSON schemas](https://docs.cedarpolicy.com/schema/json-schema.html)
 - [cedar-py implementation and API](https://github.com/k9securityio/cedar-py)
 - [Z3 Python API](https://z3prover.github.io/api/html/namespacez3py.html)
+- [UTF-8 byte-sequence syntax (RFC 3629, section 4)](https://www.rfc-editor.org/rfc/rfc3629#section-4)
 
 Cedar's symbolic compiler was consulted as a semantic reference; it is not
 imported, invoked, installed by, or included in this package.

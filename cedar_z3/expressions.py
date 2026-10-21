@@ -20,6 +20,7 @@ from .model import (
     Type,
     UnsupportedFeature,
     Value,
+    encoded_character_regex,
     eq_values,
     merge_values,
     set_member,
@@ -129,16 +130,46 @@ class ExpressionCompiler:
                 _and(*(value.ok for value in fields.values())),
             )
         if isinstance(node, pst.Like):
-            raise UnsupportedFeature("The Cedar 'like' operator is not supported")
+            return self._like(node)
         if isinstance(node, pst.Slot):
             raise UnsupportedFeature("Unlinked Cedar template slots are not supported")
         raise UnsupportedFeature(f"Unsupported Cedar expression node: {type(node).__name__}")
 
     @staticmethod
     def _string(value: str) -> z3.SeqRef:
-        # Strings are opaque in the supported fragment.  The shared injective
-        # encoding preserves equality without Z3's alphabet/escape pitfalls.
+        # Equality and patterns share one injective, Unicode-safe encoding.
         return string_literal(value)
+
+    def _like(self, node: pst.Like) -> Value:
+        value = self.compile(node.base)
+        _require(value, STRING, "like")
+        parts = [z3.Re("u")]
+        literal = []
+        previous_wildcard = False
+
+        def flush_literal():
+            if literal:
+                parts.append(z3.Re("".join(literal).encode("utf-8").hex()))
+                literal.clear()
+
+        # Cedar's parser has already distinguished escaped literal stars from
+        # wildcards and decoded string escapes. Do not parse the source again.
+        for element in node.pattern:
+            if isinstance(element, pst.Char):
+                literal.append(element.value)
+                previous_wildcard = False
+            elif isinstance(element, pst.Wildcard):
+                flush_literal()
+                if not previous_wildcard:
+                    parts.append(z3.Star(encoded_character_regex()))
+                previous_wildcard = True
+            else:
+                raise UnsupportedFeature(f"Unknown Cedar pattern element: {type(element).__name__}")
+        flush_literal()
+        pattern = parts[0] if len(parts) == 1 else z3.Concat(*parts)
+        # InRe matches the entire string; errors on the operand stay errors
+        # even under negation, unless, and forbid policies.
+        return Value(BOOL, z3.InRe(value.data, pattern), value.ok)
 
     def _unary(self, node: pst.UnaryOp) -> Value:
         operation = node.op
